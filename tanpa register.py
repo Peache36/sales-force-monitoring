@@ -12,6 +12,8 @@ import requests
 import random
 import string
 import bcrypt
+import logging
+import traceback
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -21,6 +23,11 @@ load_dotenv()
 USERNAME, OTP, MAIN_MENU, LOGGED_OUT = range(4)
 
 global_otp_hash = {}
+
+# Konfigurasi logging
+logging.basicConfig(filename='bot.log',
+                    level=logging.INFO,
+                    format='%(asctime)s - %(levelname)s - %(message)s')
 
 
 # Function to establish database connection
@@ -33,6 +40,8 @@ def connect_to_database():
         return connection
     except Error as e:
         print("Error connecting to MySQL:", e)
+        logging.error(f'Error: {e}')
+        logging.error(traceback.format_exc())
         return None
 
 
@@ -50,6 +59,8 @@ def connect_with_reconnection():
             return connection
         except (Error, ConnectionResetError) as e:
             print("Error connecting to MySQL. Retrying...")
+            logging.error(f'Error: {e}')
+            logging.error(traceback.format_exc())
             time.sleep(5)  # Wait for a few seconds before retrying
             retry_count += 1
     raise RuntimeError("Unable to establish connection after multiple retries")
@@ -91,6 +102,8 @@ def update_last_login(username):
             connection.commit()
         except Error as e:
             print("Error updating last login time:", e)
+            logging.error(f'Error: {e}')
+            logging.error(traceback.format_exc())
         finally:
             if connection.is_connected():
                 cursor.close()
@@ -115,6 +128,8 @@ def check_session_expiry(username):
                     return True  # Sesinya telah berakhir
         except Error as e:
             print("Error checking session expiry:", e)
+            logging.error(f'Error: {e}')
+            logging.error(traceback.format_exc())
         finally:
             if connection.is_connected():
                 cursor.close()
@@ -169,6 +184,8 @@ def check_user_status(username):
                 return 0
         except Error as e:
             print("Error while retrieving user status from MySQL", e)
+            logging.error(f'Error: {e}')
+            logging.error(traceback.format_exc())
             return 'inactive'
         finally:
             if connection.is_connected():
@@ -243,6 +260,8 @@ def retrieve_hashed_password(username):
                 return None
         except Error as e:
             print("Error while connecting to MySQL", e)
+            logging.error(f'Error: {e}')
+            logging.error(traceback.format_exc())
             return None
         finally:
             if (connection.is_connected()):
@@ -305,14 +324,8 @@ def sales_target(update: Update, context: CallbackContext) -> None:
 
         # Get first and last day of this month
         today = datetime.date.today()
-        first_day_of_month = today.replace(day=1).strftime(
-            '%Y%m%d')  # Convert to 'yyyymmdd' format
-        last_day_of_month = (today.replace(
-            day=1,
-            month=today.month % 12 + 1,
-            year=today.year if today.month < 12 else today.year + 1) -
-                             datetime.timedelta(days=1)).strftime(
-                                 '%Y%m%d')  # Convert to 'yyyymmdd' format
+        this_month = today.replace(day=1).strftime(
+            '%Y%m')  # Convert to 'yyyymm' format
 
         # Get first and last day of last month
         first_day_of_last_month = (
@@ -320,7 +333,7 @@ def sales_target(update: Update, context: CallbackContext) -> None:
                 day=1).strftime('%Y%m%d')  # Convert to 'yyyymmdd' format
         last_day_of_last_month = (today.replace(day=1) -
                                   datetime.timedelta(days=1)).strftime(
-                                      '%Y%m%d')  # Convert to 'yyyymmdd' format
+                                      '%Y%m')  # Convert to 'yyyymmdd' format
 
         try:
             # Connect to database
@@ -328,37 +341,41 @@ def sales_target(update: Update, context: CallbackContext) -> None:
             if connection:
                 cursor = connection.cursor()
 
-                # Count sales for this month from fact_re table based on logged in username
+                # Select agency dari user login
                 cursor.execute(
-                    "SELECT COUNT(order_id_new) FROM fact_re WHERE id_partner = %s AND DATE_FORMAT(id_tgl_re, '%Y%m%d') BETWEEN %s AND %s",
-                    (username, first_day_of_month, last_day_of_month))
-                re_count_this_month = cursor.fetchone()[0]
+                    "SELECT id_agency_sub_branch FROM dim_sales_force WHERE id_sf = %s ",
+                    (username, ))
+                id_agency_sub_branch = cursor.fetchone()[0]
 
-                # Count sales for last month from fact_re table based on logged in username
+                # Ini jumlah SF dalam agency user
                 cursor.execute(
-                    "SELECT COUNT(order_id_new) FROM fact_re WHERE id_partner = %s AND DATE_FORMAT(id_tgl_re, '%Y%m%d') BETWEEN %s AND %s",
-                    (username, first_day_of_last_month,
-                     last_day_of_last_month))
-                re_count_last_month = cursor.fetchone()[0]
+                    "SELECT COUNT(id_sf) FROM dim_sales_force WHERE id_agency_sub_branch = %s ",
+                    (id_agency_sub_branch, ))
+                count_sf_agency = cursor.fetchone()[0]
 
+                # Ini target PS agency
                 cursor.execute(
-                    "SELECT COUNT(order_id_new) FROM fact_ps WHERE id_partner = %s AND DATE_FORMAT(id_tgl_ps, '%Y%m%d') BETWEEN %s AND %s",
-                    (username, first_day_of_month, last_day_of_month))
-                ps_count_this_month = cursor.fetchone()[0]
+                    "SELECT target FROM target_ps_by_agency WHERE id_agency_sub_branch = %s AND id_tahun_bulan = %s",
+                    (id_agency_sub_branch, this_month))
 
-                # Count sales for last month from fact_re table based on logged in username
-                cursor.execute(
-                    "SELECT COUNT(order_id_new) FROM fact_ps WHERE id_partner = %s AND DATE_FORMAT(id_tgl_ps, '%Y%m%d') BETWEEN %s AND %s",
-                    (username, first_day_of_last_month,
-                     last_day_of_last_month))
-                ps_count_last_month = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                if result is not None:
+                    target_agency = result[0]
+                else:
+                    # Jika tidak ada hasil, atur target_agency menjadi 0
+                    target_agency = 0
+
+                # Target per SF
+                target_sf = round(target_agency / count_sf_agency)
 
                 # Display information
                 update.message.reply_text(
-                    f"=== <b>Pencapaian</b> ===\nSF ID : {username}\n\n++ <b>Capaian RE</b> ++\nRE Bulan Lalu: {re_count_last_month}\nRE Bulan Ini: {re_count_this_month}\n\n++ <b>Capaian PS</b> ++\nPS Bulan Lalu: {ps_count_last_month}\nPS Bulan Ini: {ps_count_this_month}",
+                    f"=== <b>Target</b> ===\nSF ID : {username}\n\n++ <b>Target PS</b> ++\nTarget PS bulan ini: {target_sf}\n",
                     parse_mode='HTML')
         except Error as e:
             print("Error while retrieving sales for this month from MySQL", e)
+            logging.error(f'Error: {e}')
+            logging.error(traceback.format_exc())
         finally:
             if connection.is_connected():
                 cursor.close()
@@ -436,6 +453,8 @@ def sales_achivement(update: Update, context: CallbackContext) -> None:
                     parse_mode='HTML')
         except Error as e:
             print("Error while retrieving sales for this month from MySQL", e)
+            logging.error(f'Error: {e}')
+            logging.error(traceback.format_exc())
         finally:
             if connection.is_connected():
                 cursor.close()
@@ -456,48 +475,54 @@ def handle_logged_out(update: Update, context: CallbackContext) -> None:
 
 
 def main() -> None:
-    # Create the Updater and pass it your bot's token
-    updater = Updater(os.getenv('TELEGRAM_BOT_TOKEN'))
+    try:
+        # Create the Updater and pass it your bot's token
+        updater = Updater(os.getenv('TELEGRAM_BOT_TOKEN'))
 
-    # Get the dispatcher to register handlers
-    dispatcher = updater.dispatcher
+        # Get the dispatcher to register handlers
+        dispatcher = updater.dispatcher
 
-    # Add command handlers
-    dispatcher.add_handler(CommandHandler("start", start))
-    dispatcher.add_handler(CommandHandler("help", help))
-    dispatcher.add_handler(CommandHandler("logout", logout))
-    dispatcher.add_handler(CommandHandler("salestarget", sales_target))
-    dispatcher.add_handler(CommandHandler("salesachivement", sales_achivement))
+        # Add command handlers
+        dispatcher.add_handler(CommandHandler("start", start))
+        dispatcher.add_handler(CommandHandler("help", help))
+        dispatcher.add_handler(CommandHandler("logout", logout))
+        dispatcher.add_handler(CommandHandler("salestarget", sales_target))
+        dispatcher.add_handler(
+            CommandHandler("salesachivement", sales_achivement))
 
-    # Add conversation handler with login states
-    conv_handler_login = ConversationHandler(
-        entry_points=[CommandHandler('login', login)],
-        states={
-            USERNAME: [
-                MessageHandler(Filters.text & ~Filters.command,
-                               authenticate_username)
-            ],
-            OTP: [
-                MessageHandler(Filters.text & ~Filters.command,
-                               authenticate_otp)
-            ],
-            MAIN_MENU: [
-                MessageHandler(
-                    Filters.regex('^(Sales Target|Today\'s Sales)$'),
-                    menu_options)
-            ]
-        },
-        fallbacks=[CommandHandler("login", login_after_logout)])
-    dispatcher.add_handler(conv_handler_login)
+        # Add conversation handler with login states
+        conv_handler_login = ConversationHandler(
+            entry_points=[CommandHandler('login', login)],
+            states={
+                USERNAME: [
+                    MessageHandler(Filters.text & ~Filters.command,
+                                   authenticate_username)
+                ],
+                OTP: [
+                    MessageHandler(Filters.text & ~Filters.command,
+                                   authenticate_otp)
+                ],
+                MAIN_MENU: [
+                    MessageHandler(
+                        Filters.regex('^(Sales Target|Today\'s Sales)$'),
+                        menu_options)
+                ]
+            },
+            fallbacks=[CommandHandler("login", login_after_logout)])
+        dispatcher.add_handler(conv_handler_login)
 
-    # Add handler for unknown commands/messages
-    dispatcher.add_handler(MessageHandler(Filters.command, unknown))
+        # Add handler for unknown commands/messages
+        dispatcher.add_handler(MessageHandler(Filters.command, unknown))
 
-    # Start the Bot
-    updater.start_polling()
+        # Start the Bot
+        updater.start_polling()
 
-    # Run the bot until you press Ctrl-C
-    updater.idle()
+        # Run the bot until you press Ctrl-C
+        updater.idle()
+    except Exception as e:
+        # Tangani kesalahan dan tulis pesan log
+        logging.error(f'Error: {e}')
+        logging.error(traceback.format_exc())
 
 
 if __name__ == '__main__':
